@@ -85,8 +85,6 @@ int AsyncFunction<T, D>::processEvent(AsyncObject<T, D> *obj, bool completed, T 
 				if (functionCallback == nullptr)
 					return AsyncFunction<T, D>::ok;
 				int ret = functionCallback(obj, completed, evttype);
-				if (syncObject)
-					ret = syncObject->processEvent(obj, evttype);
 				return ret;
 			}
 		}
@@ -97,15 +95,9 @@ int AsyncFunction<T, D>::processEvent(AsyncObject<T, D> *obj, bool completed, T 
 	return AsyncFunction<T, D>::ok;
 }
 
-template<class T, class D>
-void AsyncFunction<T, D>::registerSyncObject(AsyncObject<T, D> *obj)
-{
-	if (syncObject != nullptr)
-		syncObject->addSync(obj, &events);
-}
 
 template<class T, class D>
-AsyncObject<T, D>::AsyncObject(D d, char *nm, AsyncManager<T, D> *m) : dev(d), name(nm) , mngr(m),
+AsyncObject<T, D>::AsyncObject(D d, const char *nm, AsyncManager<T, D> *m) : dev(d), name(nm) , mngr(m),
 		aList("mainFunctionList"), processUnexpected(nullptr)
 {
 	mngr->addAsyncObject(this);
@@ -116,7 +108,13 @@ template<class T, class D>
 void AsyncObject<T, D>::addFunction(AsyncFunction<T, D> *function)
 {
 	aList.add(function);
-	function->registerSyncObject(this);
+	function->registerAsyncObject(this);
+}
+
+template<class T, class D>
+void AsyncObject<T, D>::addFunctionList(FunctionList<T, D> *functionList)
+{
+	aList.add(functionList, this);
 }
 
 template<class T, class D>
@@ -235,7 +233,7 @@ AsyncObject<T, D>& AsyncObject<T, D>::operator<<(AsyncFunction<T, D> *f)
 template<class T, class D>
 AsyncObject<T, D>& AsyncObject<T, D>::operator<<(FunctionList<T, D> *alist)
 {
-	aList.add(alist, this);
+	addFunctionList(aList);
 	return *this;
 }
 
@@ -255,20 +253,23 @@ void AsyncManager<T, D>::addAsyncObject(AsyncObject<T, D> *obj)
 	objectMap[obj->getDev()] = obj;
 }
 
+
 template<class T, class D>
-void SyncObject<T, D>::addSync(AsyncObject<T, D> *obj, std::vector<T> *events)
+SyncFunction<T, D>::SyncFunction(SyncPoint<T, D> *parent) : AsyncFunction<T, D>(sPoint->getName(), NULL), sPoint(parent)
 {
-	Pair<T, D> pair;
-	pair.obj = obj;
-	pair.events = events;
-	pair.completedeted = false;
-	pairs.push_back(pair);
 }
 
 template<class T, class D>
-int SyncObject<T, D>::processEvent(AsyncObject<T, D> *obj, T evt)
+int SyncFunction<T, D>::processEvent(AsyncObject<T, D> *obj, bool completed, T evt)
 {
-	unsigned completedeted = 0;
+	if (completed)
+	{
+		//check if correct termination event]'
+		if (evt != sPoint->getTermEvent())
+			return AsyncFunction<T, D>::noEventMacth;
+		return 0;
+	}
+	unsigned alreadycompleted = 0;
 	bool found = false;
 	Pair<T, D> *pair;
 
@@ -276,19 +277,41 @@ int SyncObject<T, D>::processEvent(AsyncObject<T, D> *obj, T evt)
 	{
 		pair = &pairs[i];
 		if (!found && pair->obj == obj &&
-			!pair->completedeted)
+			!pair->completed)
 		{
-			pair->completedeted = true;
+			pair->completed = true;
 			pair->event = evt;
 			found = true;
 		}
 
-		if (pair->completedeted)
-			completedeted++;
+		if (pair->completed)
+			alreadycompleted++;
 	}
-	if (completedeted == pairs.size())
-		return callback(&pairs);
+	if (alreadycompleted == pairs.size())
+		return sPoint->termRecv(&pairs);
+	return AsyncFunction<T, D>::ok;
+}
 
-	return AsyncFunction<T, D>::error;
+template<class T, class D>
+void SyncFunction<T, D>::registerAsyncObject(AsyncObject<T, D> *obj)
+{
+	Pair<T, D> pair= { obj, false};
+	pairs.push_back(pair);
+}
+
+template<class T, class D>
+int SyncPoint<T, D>::termRecv(std::vector<Pair<T, D> > *pairs)
+{
+	int ret = callback(pairs);
+	sendSyncReadyEvent(pairs);
+	return ret;
+
+}
+
+template<class T, class D>
+AsyncFunction<T, D> *SyncPoint<T, D>::getInstance()
+{
+	AsyncFunction<T, D> *func = new SyncFunction<T, D>(name, this, term);
+	return func;
 }
 
